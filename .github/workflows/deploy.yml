@@ -1,0 +1,75 @@
+# 工作流的名字（显示在 GitHub 仓库的 Actions 页签上）
+name: 前端 CI/CD 部署
+
+# 触发条件：当 main 分支收到新的 push 时自动运行
+on:
+  push:
+    branches: [main]
+
+# 两个大步骤在 GitHub 的说法叫 job
+jobs:
+  # ---------- Job 1：CI —— 构建、测试、推送镜像 ----------
+  build-and-push:
+    runs-on: ubuntu-latest # GitHub 免费提供的临时 Linux 机器
+    permissions:
+      contents: read
+      packages: write # 允许推送镜像到 GitHub 自带的镜像仓库 ghcr.io
+
+    steps:
+      # 每一步都是"动作"，uses = 用别人写好的现成动作
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # run = 执行 shell 命令，和你本地敲的命令一模一样
+      - name: 安装依赖并构建
+        run: |
+          npm ci
+          npm run build
+
+      # 登录 GitHub 镜像仓库（ghcr.io），用 GitHub 自动颁发的临时令牌
+      - name: 登录镜像仓库
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 构建并推送镜像。镜像名 = ghcr.io/用户名/仓库名
+      - name: 构建并推送 Docker 镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+  # ---------- Job 2：CD —— 登录服务器，拉取新镜像并重启 ----------
+  # 注意：这段需要你有自己的云服务器，并在 GitHub Secrets 里配置好
+  # SERVER_HOST / SERVER_USER / SERVER_SSH_KEY 才能跑通。
+  # 在配好之前先注释掉，避免每次 push 都报红。有服务器后删掉每行行首的 # 即可。
+  # deploy:
+  #   needs: build-and-push # 必须等 Job 1 成功后才执行（失败就不会部署坏版本）
+  #   runs-on: ubuntu-latest
+  #
+  #   steps:
+  #     - name: SSH 到服务器执行部署命令
+  #       uses: appleboy/ssh-action@v1
+  #       with:
+  #         host: ${{ secrets.SERVER_HOST }} # 服务器的 IP，存放在 GitHub Secrets 里
+  #         username: ${{ secrets.SERVER_USER }}
+  #         key: ${{ secrets.SERVER_SSH_KEY }} # SSH 私钥（不是密码！）
+  #         script: |
+  #           docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+  #           docker pull ghcr.io/${{ github.repository }}:latest
+  #           docker stop web || true
+  #           docker rm web || true
+  #           docker run -d --name web -p 80:80 --restart always \
+  #             ghcr.io/${{ github.repository }}:latest
+  #           docker image prune -f
